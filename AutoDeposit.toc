@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: AutoDeposit
+## Notes: Automatically deposits selected bag items into a chosen Guild Bank tab.
+## Author: xLT69x
+## Version: 1.2.0
+## SavedVariables: AutoDepositDB
+
+AutoDeposit.lua
