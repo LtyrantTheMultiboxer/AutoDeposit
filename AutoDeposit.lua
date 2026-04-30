@@ -475,12 +475,11 @@ local function CreateMainFrame()
     local titleTxt = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     titleTxt:SetPoint("TOP", f, "TOP", 0, -5)
     titleTxt:SetText(
-        "|cff00AAFF[|r " ..
-        "|cff00EEFF\xE2\x97\x88|r " ..   -- ◈
-        "|cffFFFFFFAutoDeposit|r " ..
-        "|cff00EEFF\xE2\x97\x88|r " ..
-        "|cff00AAFF]|r" ..
-        "  |cff336688v" .. AD.version .. "|r"
+        "|cff00AAFF< |r" ..
+        "|cff00EEFFxLT69x|r" ..
+        "|cffFFFFFF  AutoDeposit  |r" ..
+        "|cff00EEFFxLT69x|r" ..
+        "|cff00AAFF >|r"
     )
 
     -- Thin cyan accent line under title
