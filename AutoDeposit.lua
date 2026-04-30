@@ -1,5 +1,5 @@
 --[[
-    AutoDeposit v1.2.0
+    AutoDeposit v1.3.0
     WoW 3.3.5 (WotLK) Addon
     Scans bags, filters to depositable items only, and deposits
     selected items into a chosen Guild Bank tab.
@@ -12,7 +12,7 @@
 AutoDepositDB = AutoDepositDB or {}
 
 local AD = {}
-AD.version       = "1.2.0"
+AD.version       = "1.5.0"
 AD.selectedItems = {}    -- [selKey] = true
 AD.bagItems      = {}    -- filtered, depositable items only
 AD.guildTab      = 1     -- selected guild bank tab (1-based)
@@ -108,8 +108,10 @@ local function ScanBags()
     for bag = 0, 4 do
         local numSlots = GetContainerNumSlots(bag)
         for slot = 1, numSlots do
-            -- WotLK 3.3.5: texture, count, locked, quality, readable, lootable, link
-            local texture, count, _, quality, _, _, link = GetContainerItemInfo(bag, slot)
+            -- Use GetContainerItemLink (same as the working /run script)
+            local link = GetContainerItemLink(bag, slot)
+            -- GetContainerItemInfo gives us texture, count, quality for display
+            local texture, count, _, quality = GetContainerItemInfo(bag, slot)
             if link then
                 if IsDepositable(bag, slot, link) then
                     local itemID = tonumber(link:match("item:(%d+)"))
@@ -209,6 +211,7 @@ local function UpdateScrollFrame()
             hl:SetAllPoints()
             hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
             hl:SetBlendMode("ADD")
+            hl:SetVertexColor(0.00, 0.80, 1.00)  -- cyan tint on hover
 
             local cb = CreateFrame("CheckButton", "AutoDepositCB" .. i, row, "UICheckButtonTemplate")
             cb:SetSize(22, 22)
@@ -236,7 +239,7 @@ local function UpdateScrollFrame()
             sep:SetHeight(1)
             sep:SetPoint("BOTTOMLEFT",  row, "BOTTOMLEFT",  0, 0)
             sep:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
-            sep:SetTexture(0.2, 0.2, 0.2, 0.9)
+            sep:SetTexture(0.00, 0.35, 0.55, 0.6)  -- muted cyan separator
 
             AD.rows[i] = row
         end
@@ -270,58 +273,120 @@ local function UpdateScrollFrame()
         local sel = 0
         for _ in pairs(AD.selectedItems) do sel = sel + 1 end
         AD.statusLabel:SetText(
-            total .. " depositable item" .. (total ~= 1 and "s" or "") ..
-            " in bags" .. (sel > 0 and ("  |cff00ff00(" .. sel .. " selected)|r") or "")
+            "|cff00AAFF>> |r|cffAADDFF" ..
+            total .. " depositable item" .. (total ~= 1 and "s" or "") .. " in bags|r" ..
+            (sel > 0 and ("  |cff22FF66(" .. sel .. " selected)|r") or "")
         )
     end
 end
 
 ------------------------------------------------------------------------
--- Deposit
--- We call SetCurrentGuildBankTab then loop through selected items.
--- No extra permission guards here — the game will reject bad calls on
--- its own; guards were the main reason deposits silently failed before.
+-- Deposit queue
+-- UseContainerItem can only handle one guild-bank deposit at a time.
+-- We queue all selected items and send them one per 0.5 s interval.
 ------------------------------------------------------------------------
+local depositQueue   = {}   -- items still waiting to be sent
+local depositTotal   = 0    -- total items queued for this run
+local depositDone    = 0    -- items successfully sent
+local depositTimer   = 0
+local DEPOSIT_DELAY  = 0.5  -- seconds between each UseContainerItem call
+
+-- Persistent frame used for OnUpdate ticking
+local depositFrame = CreateFrame("Frame")
+depositFrame:SetScript("OnUpdate", nil)  -- idle until a run starts
+
+local function FinishDeposit()
+    depositFrame:SetScript("OnUpdate", nil)
+    AD.isDepositing = false
+    SaveState()
+    Print("Done — deposited " .. depositDone .. " / " .. depositTotal ..
+          " stack(s) to Tab " .. AD.guildTab .. ".")
+    -- Give the server a moment then refresh the list
+    local t = 0
+    local rf = CreateFrame("Frame")
+    rf:SetScript("OnUpdate", function(self, dt)
+        t = t + dt
+        if t >= 0.6 then
+            self:SetScript("OnUpdate", nil)
+            ScanBags()
+            UpdateScrollFrame()
+        end
+    end)
+end
+
+-- ticker starts idle; DoDeposit arms it
+depositFrame:SetScript("OnUpdate", nil)
+
 local function DoDeposit()
     if not AD.guildBankOpen then
         Print("Open the Guild Bank window first, then click Deposit.")
         return
     end
 
-    -- Switch to the chosen tab
-    SetCurrentGuildBankTab(AD.guildTab)
+    if AD.isDepositing then
+        Print("Already depositing — please wait until the current run finishes.")
+        return
+    end
 
-    local deposited = 0
+    -- Build the queue from checked items
+    depositQueue = {}
     for _, item in ipairs(AD.bagItems) do
         if AD.selectedItems[item.selKey] then
-            DepositGuildBankItem(item.bag, item.slot)
-            deposited = deposited + 1
+            table.insert(depositQueue, {
+                bag    = item.bag,
+                slot   = item.slot,
+                itemID = item.itemID,
+                selKey = item.selKey,
+            })
         end
     end
 
-    if deposited > 0 then
-        Print("Depositing " .. deposited .. " stack(s) to Guild Bank Tab " .. AD.guildTab .. ".")
-        -- Clear selections for items we just sent
-        for _, item in ipairs(AD.bagItems) do
-            if AD.selectedItems[item.selKey] then
-                AD.selectedItems[item.selKey] = nil
+    if #depositQueue == 0 then
+        Print("Nothing selected — tick checkboxes in the list, then click Deposit.")
+        return
+    end
+
+    depositTotal   = #depositQueue
+    depositDone    = 0
+    depositTimer   = DEPOSIT_DELAY  -- fire the first deposit immediately (no leading wait)
+    AD.isDepositing = true
+
+    -- Point to the chosen guild bank tab
+    SetCurrentGuildBankTab(AD.guildTab)
+
+    Print("Starting deposit of " .. depositTotal ..
+          " stack(s) to Guild Bank Tab " .. AD.guildTab .. "...")
+
+    -- Kick off the ticker
+    depositFrame:SetScript("OnUpdate", function(self, elapsed)
+        depositTimer = depositTimer + elapsed
+        if depositTimer < DEPOSIT_DELAY then return end
+        depositTimer = 0
+
+        if #depositQueue == 0 then
+            FinishDeposit()
+            return
+        end
+
+        local item = table.remove(depositQueue, 1)
+        local currentLink = GetContainerItemLink(item.bag, item.slot)
+        local currentID   = currentLink and tonumber(currentLink:match("item:(%d+)"))
+        if currentID and currentID == item.itemID then
+            UseContainerItem(item.bag, item.slot)
+            AD.selectedItems[item.selKey] = nil
+            depositDone = depositDone + 1
+
+            if AD.statusLabel then
+                AD.statusLabel:SetText(
+                    "|cffFFAA00Depositing " .. depositDone .. " / " .. depositTotal .. "...|r"
+                )
             end
         end
-        SaveState()
-        -- Re-scan after the server has processed the deposits
-        local elapsed = 0
-        local waitFrame = CreateFrame("Frame")
-        waitFrame:SetScript("OnUpdate", function(self, dt)
-            elapsed = elapsed + dt
-            if elapsed >= 0.8 then
-                self:SetScript("OnUpdate", nil)
-                ScanBags()
-                UpdateScrollFrame()
-            end
-        end)
-    else
-        Print("Nothing selected — tick checkboxes in the list, then click Deposit.")
-    end
+
+        if #depositQueue == 0 then
+            FinishDeposit()
+        end
+    end)
 end
 
 ------------------------------------------------------------------------
@@ -357,6 +422,22 @@ end
 --  ──────────────────────────────────
 --  530 px   → FRAME_H = 590 gives headroom
 ------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- Futuristic colour palette
+------------------------------------------------------------------------
+local C = {
+    cyan      = {0.00, 0.85, 1.00},   -- electric cyan  (borders, accents)
+    cyanDim   = {0.00, 0.55, 0.80},   -- dimmed cyan    (dividers)
+    bgDark    = {0.02, 0.04, 0.13},   -- near-black navy (background)
+    bgRow     = {0.03, 0.07, 0.18},   -- slightly lighter (scroll bg)
+    green     = {0.10, 1.00, 0.40},   -- neon green     (Deposit btn)
+    orange    = {1.00, 0.55, 0.05},   -- amber          (Deselect btn)
+    white     = {1.00, 1.00, 1.00},
+}
+
+-- Helper: wrap text in a colour tag
+local function Col(hex, text)  return "|cff" .. hex .. text .. "|r"  end
+
 local function CreateMainFrame()
     if AD.frame then return end
 
@@ -369,34 +450,49 @@ local function CreateMainFrame()
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop",  f.StopMovingOrSizing)
     f:SetFrameStrata("DIALOG")
+
+    -- Dark navy background with cyan glowing border
     f:SetBackdrop({
         bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
         tile = true, tileSize = 32, edgeSize = 32,
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
     })
+    f:SetBackdropColor(C.bgDark[1], C.bgDark[2], C.bgDark[3], 0.97)
+    f:SetBackdropBorderColor(C.cyan[1], C.cyan[2], C.cyan[3], 1.0)
     f:Hide()
 
     -- ── Title bar ────────────────────────────────────────────────────
+    -- Tint the standard header texture cyan-blue
     local titleBg = f:CreateTexture(nil, "ARTWORK")
     titleBg:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
-    titleBg:SetWidth(256)
+    titleBg:SetWidth(300)
     titleBg:SetHeight(64)
     titleBg:SetPoint("TOP", f, "TOP", 0, 12)
+    titleBg:SetVertexColor(0.00, 0.60, 0.90, 1.0)
 
-    local titleTxt = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    titleTxt:SetPoint("TOP", f, "TOP", 0, -6)
-    titleTxt:SetText("|cff00ccffAutoDeposit|r  v" .. AD.version)
+    -- Futuristic title  [ ◈ AutoDeposit ◈ ]
+    local titleTxt = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    titleTxt:SetPoint("TOP", f, "TOP", 0, -5)
+    titleTxt:SetText(
+        "|cff00AAFF[|r " ..
+        "|cff00EEFF\xE2\x97\x88|r " ..   -- ◈
+        "|cffFFFFFFAutoDeposit|r " ..
+        "|cff00EEFF\xE2\x97\x88|r " ..
+        "|cff00AAFF]|r" ..
+        "  |cff336688v" .. AD.version .. "|r"
+    )
+
+    -- Thin cyan accent line under title
+    local titleLine = f:CreateTexture(nil, "OVERLAY")
+    titleLine:SetHeight(2)
+    titleLine:SetPoint("TOPLEFT",  f, "TOPLEFT",  14, -28)
+    titleLine:SetPoint("TOPRIGHT", f, "TOPRIGHT", -14, -28)
+    titleLine:SetTexture(C.cyan[1], C.cyan[2], C.cyan[3], 0.9)
 
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
     closeBtn:SetScript("OnClick", function() f:Hide() end)
-
-    local divTop = f:CreateTexture(nil, "ARTWORK")
-    divTop:SetHeight(1)
-    divTop:SetPoint("TOPLEFT",  f, "TOPLEFT",  14, -30)
-    divTop:SetPoint("TOPRIGHT", f, "TOPRIGHT", -14, -30)
-    divTop:SetTexture(0.4, 0.4, 0.4, 1)
 
     -- ── Scroll area ───────────────────────────────────────────────────
     local scrollFrame = CreateFrame("ScrollFrame", "AutoDepositScrollFrame", f, "UIPanelScrollFrameTemplate")
@@ -408,76 +504,85 @@ local function CreateMainFrame()
     scrollFrame:SetScrollChild(scrollChild)
     AD.scrollChild = scrollChild
 
+    -- Dark tinted background behind the item rows
+    local scrollBg = scrollChild:CreateTexture(nil, "BACKGROUND")
+    scrollBg:SetAllPoints()
+    scrollBg:SetTexture(C.bgRow[1], C.bgRow[2], C.bgRow[3], 0.85)
+
     -- ── Status text ───────────────────────────────────────────────────
-    -- Anchored absolutely so nothing floats unexpectedly
     local statusLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     statusLabel:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -(34 + SCROLL_H + 6))
-    statusLabel:SetText("|cffaaaaaa Click 'Bag Scan' to load items|r")
+    statusLabel:SetText("|cff00AAFF>> |r|cffAACCFF Click 'Bag Scan' to load items|r")
     AD.statusLabel = statusLabel
 
-    -- ── Separator 1 (above tab row) ───────────────────────────────────
+    -- ── Cyan divider above tab row ────────────────────────────────────
     local divMid = f:CreateTexture(nil, "ARTWORK")
-    divMid:SetHeight(1)
+    divMid:SetHeight(2)
     divMid:SetPoint("TOPLEFT",  f, "TOPLEFT",  14, -(34 + SCROLL_H + 24))
     divMid:SetPoint("TOPRIGHT", f, "TOPRIGHT", -14, -(34 + SCROLL_H + 24))
-    divMid:SetTexture(0.4, 0.4, 0.4, 1)
+    divMid:SetTexture(C.cyanDim[1], C.cyanDim[2], C.cyanDim[3], 0.85)
 
     -- ── Guild Bank tab row ────────────────────────────────────────────
-    -- 28 px below divMid (from frame top: 34 + 384 + 24 + 8 = 450... wait)
-    -- Let's anchor from the bottom up for the bottom sections
-
     local tabLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     tabLbl:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 56)
-    tabLbl:SetText("Guild Bank Tab:")
+    tabLbl:SetText("|cff00CCFF>> Guild Bank Tab:|r")
 
-    -- UIDropDownMenuTemplate has built-in 16 px left padding — compensate
     local tabDD = CreateFrame("Frame", "AutoDepositTabDropdown", f, "UIDropDownMenuTemplate")
-    tabDD:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 120, 46)
-    UIDropDownMenu_SetWidth(tabDD, 220)
+    tabDD:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 148, 46)
+    UIDropDownMenu_SetWidth(tabDD, 200)
     AD.tabDropdown = tabDD
 
-    -- ── Separator 2 (above button row) ───────────────────────────────
+    -- ── Cyan divider above button row ─────────────────────────────────
     local divBot = f:CreateTexture(nil, "ARTWORK")
-    divBot:SetHeight(1)
+    divBot:SetHeight(2)
     divBot:SetPoint("BOTTOMLEFT",  f, "BOTTOMLEFT",  14, 46)
     divBot:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14, 46)
-    divBot:SetTexture(0.4, 0.4, 0.4, 1)
+    divBot:SetTexture(C.cyanDim[1], C.cyanDim[2], C.cyanDim[3], 0.85)
 
-    -- ── Button row (14 px from bottom) ───────────────────────────────
-    local BTN_Y = 16   -- y from BOTTOMLEFT
+    -- ── Button row ────────────────────────────────────────────────────
+    local BTN_Y = 16
 
+    -- Bag Scan — cyan text
     local scanBtn = CreateFrame("Button", "AutoDepositScanBtn", f, "UIPanelButtonTemplate")
     scanBtn:SetSize(100, 24)
     scanBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, BTN_Y)
-    scanBtn:SetText("Bag Scan")
+    scanBtn:SetText("|cff00EEFF Bag Scan|r")
     scanBtn:SetScript("OnClick", function()
         local skipped = ScanBags()
         UpdateScrollFrame()
         BuildTabDropdown()
         local msg = "Scan complete — " .. #AD.bagItems .. " depositable item(s) found."
         if skipped > 0 then
-            msg = msg .. " |cff888888(" .. skipped .. " bound/quest item(s) hidden)|r"
+            msg = msg .. " |cff556677(" .. skipped .. " bound/quest hidden)|r"
         end
         Print(msg)
     end)
 
+    -- Select All — white/light-blue text
     local selAllBtn = CreateFrame("Button", "AutoDepositSelAllBtn", f, "UIPanelButtonTemplate")
     selAllBtn:SetSize(82, 24)
     selAllBtn:SetPoint("LEFT", scanBtn, "RIGHT", 4, 0)
-    selAllBtn:SetText("Select All")
+    selAllBtn:SetText("|cffAADDFF Select All|r")
     selAllBtn:SetScript("OnClick", SelectAll)
 
+    -- Deselect All — amber text
     local deselAllBtn = CreateFrame("Button", "AutoDepositDeselAllBtn", f, "UIPanelButtonTemplate")
-    deselAllBtn:SetSize(90, 24)
+    deselAllBtn:SetSize(94, 24)
     deselAllBtn:SetPoint("LEFT", selAllBtn, "RIGHT", 4, 0)
-    deselAllBtn:SetText("Deselect All")
+    deselAllBtn:SetText("|cffFFAA22 Deselect All|r")
     deselAllBtn:SetScript("OnClick", DeselectAll)
 
+    -- Deposit — neon green text, stands out as the primary action
     local depositBtn = CreateFrame("Button", "AutoDepositDepositBtn", f, "UIPanelButtonTemplate")
     depositBtn:SetSize(104, 24)
     depositBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14, BTN_Y)
-    depositBtn:SetText("Deposit")
+    depositBtn:SetText("|cff22FF66 Deposit|r")
     depositBtn:SetScript("OnClick", DoDeposit)
+
+    -- ── Footer author tag ─────────────────────────────────────────────
+    local authorTxt = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    authorTxt:SetPoint("BOTTOM", f, "BOTTOM", 0, 4)
+    authorTxt:SetText("|cff224455by |r|cff00AAFF xLT69x|r")
 
     -- Frame fully constructed — safe to expose
     AD.frame = f
@@ -528,7 +633,9 @@ ev:SetScript("OnEvent", function(self, event, arg1)
         AD.guildBankOpen = false
 
     elseif event == "BAG_UPDATE" then
-        if AD.frame and AD.frame:IsShown() then
+        -- Don't auto-refresh while a deposit run is in progress;
+        -- FinishDeposit() will do a final scan when the queue drains.
+        if AD.frame and AD.frame:IsShown() and not AD.isDepositing then
             ScanBags()
             UpdateScrollFrame()
         end
