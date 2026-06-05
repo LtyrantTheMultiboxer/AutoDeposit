@@ -1,4 +1,6 @@
 # AutoDeposit
+<img width="1024" height="1024" alt="AutoDeposit Logo" src="https://github.com/user-attachments/assets/d4193030-e321-4608-928b-334a02d91626" />
+
 ### by xLT69x — World of Warcraft 3.3.5 (WotLK) Addon
 <img width="442" height="601" alt="AutoDeposit demo" src="https://github.com/user-attachments/assets/659af944-3412-487e-82dc-d4a03cd3d65b" />
 
