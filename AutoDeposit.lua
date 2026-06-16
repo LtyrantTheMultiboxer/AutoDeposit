@@ -18,9 +18,12 @@ AD.bagItems      = {}    -- filtered, depositable items only
 AD.guildTab      = 1     -- selected guild bank tab (1-based)
 AD.guildBankOpen = false -- set by GUILDBANKFRAME_OPENED / CLOSED
 AD.rows          = {}    -- reusable row frames
+AD.autoOpen      = true     -- auto-open window when any bank is opened
+AD.depositMode   = "guild"  -- "guild" or "bank"
+AD.bankOpen      = false    -- set by BANKFRAME_OPENED / CLOSED
 
 local FRAME_W  = 440
-local FRAME_H  = 590
+local FRAME_H  = 622
 local NUM_ROWS = 12
 local ROW_H    = 32
 local SCROLL_H = NUM_ROWS * ROW_H   -- 384
@@ -35,6 +38,8 @@ end
 local function SaveState()
     AutoDepositDB.selectedItems = AD.selectedItems
     AutoDepositDB.guildTab      = AD.guildTab
+    AutoDepositDB.autoOpen      = AD.autoOpen
+    AutoDepositDB.depositMode   = AD.depositMode
 end
 
 local function LoadState()
@@ -43,6 +48,12 @@ local function LoadState()
     end
     if type(AutoDepositDB.guildTab) == "number" then
         AD.guildTab = AutoDepositDB.guildTab
+    end
+    if type(AutoDepositDB.autoOpen) == "boolean" then
+        AD.autoOpen = AutoDepositDB.autoOpen
+    end
+    if type(AutoDepositDB.depositMode) == "string" then
+        AD.depositMode = AutoDepositDB.depositMode
     end
 end
 
@@ -299,8 +310,11 @@ local function FinishDeposit()
     depositFrame:SetScript("OnUpdate", nil)
     AD.isDepositing = false
     SaveState()
+    local dest = (AD.depositMode == "bank")
+        and "Personal Bank"
+        or  ("Guild Bank Tab " .. AD.guildTab)
     Print("Done — deposited " .. depositDone .. " / " .. depositTotal ..
-          " stack(s) to Tab " .. AD.guildTab .. ".")
+          " stack(s) to " .. dest .. ".")
     -- Give the server a moment then refresh the list
     local t = 0
     local rf = CreateFrame("Frame")
@@ -318,9 +332,17 @@ end
 depositFrame:SetScript("OnUpdate", nil)
 
 local function DoDeposit()
-    if not AD.guildBankOpen then
-        Print("Open the Guild Bank window first, then click Deposit.")
-        return
+    -- Validate the correct bank window is open for the selected mode
+    if AD.depositMode == "bank" then
+        if not AD.bankOpen then
+            Print("Open your Bank (talk to a Banker) first, then click Deposit.")
+            return
+        end
+    else
+        if not AD.guildBankOpen then
+            Print("Open the Guild Bank window first, then click Deposit.")
+            return
+        end
     end
 
     if AD.isDepositing then
@@ -346,16 +368,20 @@ local function DoDeposit()
         return
     end
 
-    depositTotal   = #depositQueue
-    depositDone    = 0
-    depositTimer   = DEPOSIT_DELAY  -- fire the first deposit immediately (no leading wait)
+    depositTotal    = #depositQueue
+    depositDone     = 0
+    depositTimer    = DEPOSIT_DELAY
     AD.isDepositing = true
 
-    -- Point to the chosen guild bank tab
-    SetCurrentGuildBankTab(AD.guildTab)
+    -- For guild bank: switch to the chosen tab first
+    if AD.depositMode == "guild" then
+        SetCurrentGuildBankTab(AD.guildTab)
+    end
 
-    Print("Starting deposit of " .. depositTotal ..
-          " stack(s) to Guild Bank Tab " .. AD.guildTab .. "...")
+    local dest = (AD.depositMode == "bank")
+        and "Personal Bank"
+        or  ("Guild Bank Tab " .. AD.guildTab)
+    Print("Starting deposit of " .. depositTotal .. " stack(s) to " .. dest .. "...")
 
     -- Kick off the ticker
     depositFrame:SetScript("OnUpdate", function(self, elapsed)
@@ -521,15 +547,71 @@ local function CreateMainFrame()
     divMid:SetPoint("TOPRIGHT", f, "TOPRIGHT", -14, -(34 + SCROLL_H + 24))
     divMid:SetTexture(C.cyanDim[1], C.cyanDim[2], C.cyanDim[3], 0.85)
 
+    -- ── Mode selector ─────────────────────────────────────────────────
+    local modeLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    modeLbl:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 120)
+    modeLbl:SetText("|cff00CCFF>> Deposit to:|r")
+
+    local guildModeBtn = CreateFrame("Button", "AutoDepositGuildModeBtn", f, "UIPanelButtonTemplate")
+    guildModeBtn:SetSize(104, 22)
+    guildModeBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 130, 116)
+
+    local bankModeBtn = CreateFrame("Button", "AutoDepositBankModeBtn", f, "UIPanelButtonTemplate")
+    bankModeBtn:SetSize(118, 22)
+    bankModeBtn:SetPoint("LEFT", guildModeBtn, "RIGHT", 4, 0)
+
+    -- Cyan divider between mode row and tab row
+    local divMode = f:CreateTexture(nil, "ARTWORK")
+    divMode:SetHeight(1)
+    divMode:SetPoint("BOTTOMLEFT",  f, "BOTTOMLEFT",  14, 108)
+    divMode:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -14, 108)
+    divMode:SetTexture(C.cyanDim[1], C.cyanDim[2], C.cyanDim[3], 0.5)
+
     -- ── Guild Bank tab row ────────────────────────────────────────────
     local tabLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    tabLbl:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 56)
+    tabLbl:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 88)
     tabLbl:SetText("|cff00CCFF>> Guild Bank Tab:|r")
 
     local tabDD = CreateFrame("Frame", "AutoDepositTabDropdown", f, "UIDropDownMenuTemplate")
-    tabDD:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 148, 46)
+    tabDD:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 148, 78)
     UIDropDownMenu_SetWidth(tabDD, 200)
     AD.tabDropdown = tabDD
+
+    -- Personal Bank indicator (shown instead of tab dropdown in bank mode)
+    local bankIndLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    bankIndLbl:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 88)
+    bankIndLbl:SetText("|cff00CCFF>> Destination: |r|cffAADDFF Personal Bank|r")
+
+    -- Helper: refresh mode button colours and show/hide conditional elements
+    local function UpdateModeUI()
+        if AD.depositMode == "bank" then
+            guildModeBtn:SetText("|cff888888 Guild Bank|r")
+            bankModeBtn:SetText("|cff00EEFF Personal Bank|r")
+            tabLbl:Hide()
+            tabDD:Hide()
+            bankIndLbl:Show()
+        else
+            guildModeBtn:SetText("|cff00EEFF Guild Bank|r")
+            bankModeBtn:SetText("|cff888888 Personal Bank|r")
+            tabLbl:Show()
+            tabDD:Show()
+            bankIndLbl:Hide()
+        end
+    end
+    AD.UpdateModeUI = UpdateModeUI
+
+    guildModeBtn:SetScript("OnClick", function()
+        AD.depositMode = "guild"
+        SaveState()
+        UpdateModeUI()
+    end)
+    bankModeBtn:SetScript("OnClick", function()
+        AD.depositMode = "bank"
+        SaveState()
+        UpdateModeUI()
+    end)
+
+    UpdateModeUI()  -- set initial state from loaded settings
 
     -- ── Cyan divider above button row ─────────────────────────────────
     local divBot = f:CreateTexture(nil, "ARTWORK")
@@ -578,6 +660,20 @@ local function CreateMainFrame()
     depositBtn:SetText("|cff22FF66 Deposit|r")
     depositBtn:SetScript("OnClick", DoDeposit)
 
+    -- ── Auto-open toggle ──────────────────────────────────────────────
+    local autoOpenCB = CreateFrame("CheckButton", "AutoDepositAutoOpenCB", f, "UICheckButtonTemplate")
+    autoOpenCB:SetSize(20, 20)
+    autoOpenCB:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 4)
+    autoOpenCB:SetChecked(AD.autoOpen)
+    local autoOpenLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    autoOpenLbl:SetPoint("LEFT", autoOpenCB, "RIGHT", 2, 0)
+    autoOpenLbl:SetText("|cff00AAFF Auto-open at Guild Bank|r")
+    autoOpenCB:SetScript("OnClick", function(self)
+        AD.autoOpen = self:GetChecked() and true or false
+        SaveState()
+    end)
+    AD.autoOpenCB = autoOpenCB
+
     -- ── Footer author tag ─────────────────────────────────────────────
     local authorTxt = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     authorTxt:SetPoint("BOTTOM", f, "BOTTOM", 0, 4)
@@ -615,7 +711,20 @@ local ev = CreateFrame("Frame", "AutoDepositEventFrame")
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("GUILDBANKFRAME_OPENED")
 ev:RegisterEvent("GUILDBANKFRAME_CLOSED")
+ev:RegisterEvent("BANKFRAME_OPENED")
+ev:RegisterEvent("BANKFRAME_CLOSED")
 ev:RegisterEvent("BAG_UPDATE")
+
+local function AutoOpenFrame()
+    if not AD.frame then CreateMainFrame() end
+    if AD.frame and not AD.frame:IsShown() then
+        ScanBags()
+        UpdateScrollFrame()
+        BuildTabDropdown()
+        if AD.autoOpenCB then AD.autoOpenCB:SetChecked(true) end
+        AD.frame:Show()
+    end
+end
 
 ev:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "AutoDeposit" then
@@ -624,12 +733,28 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "GUILDBANKFRAME_OPENED" then
         AD.guildBankOpen = true
+        if AD.autoOpen then
+            AD.depositMode = "guild"
+            if AD.UpdateModeUI then AD.UpdateModeUI() end
+            AutoOpenFrame()
+        end
         if AD.frame and AD.frame:IsShown() then
             BuildTabDropdown()
         end
 
     elseif event == "GUILDBANKFRAME_CLOSED" then
         AD.guildBankOpen = false
+
+    elseif event == "BANKFRAME_OPENED" then
+        AD.bankOpen = true
+        if AD.autoOpen then
+            AD.depositMode = "bank"
+            if AD.UpdateModeUI then AD.UpdateModeUI() end
+            AutoOpenFrame()
+        end
+
+    elseif event == "BANKFRAME_CLOSED" then
+        AD.bankOpen = false
 
     elseif event == "BAG_UPDATE" then
         -- Don't auto-refresh while a deposit run is in progress;
