@@ -1,10 +1,30 @@
 # AutoDeposit
+### by xLT69x — World of Warcraft 3.3.5 (WotLK) Addon — v1.5.5
 <img width="1024" height="1024" alt="AutoDeposit Logo" src="https://github.com/user-attachments/assets/d4193030-e321-4608-928b-334a02d91626" />
 
 ### by xLT69x — World of Warcraft 3.3.5 (WotLK) Addon
 <img width="442" height="601" alt="AutoDeposit demo" src="https://github.com/user-attachments/assets/659af944-3412-487e-82dc-d4a03cd3d65b" />
 
-> Scan your bags, pick your items, and deposit them straight into the Guild Bank — all from one clean futuristic window.
+> Scan your bags, pick your items, and deposit them straight into the Guild Bank **or your Personal Bank** — all from one clean futuristic window.
+
+---
+
+## What's New in v1.5.5
+
+| # | Feature |
+|---|---------|
+| 1 | **Version number** displayed in the top-right corner of the addon frame |
+| 2 | **Minimap button** — shows the AutoDeposit logo (bundled `logo.tga`) on the minimap; click to open/close, drag to reposition |
+| 3 | **Interface > AddOns panel** — open AutoDeposit settings via the standard WoW Interface screen |
+| 4 | **Personal Bank support** — deposit directly to your character's own bank (added in v1.5.0, now stable) |
+| 5 | **Auto-close window** — the window now closes automatically when you close the Guild Bank or Personal Bank |
+| 6 | Version bumped to **1.5.5** in both `AutoDeposit.lua` and `AutoDeposit.toc` |
+
+### Fixes in this build
+
+- **Minimap button & Interface panel now actually appear.** Both were silently failing because the WoW 3.3.5 checkbox label uses the global `<name>Text` element, not the retail-era `.Text` property — the error aborted panel creation and blocked the minimap button. Both are now created on `PLAYER_LOGIN` for reliable initialization.
+- **Minimap button resized and corrected.** The logo is now a small circular icon (cropped with `SetTexCoord`) framed by the standard minimap tracking border, instead of an oversized icon spilling past the ring.
+- **Custom logo bundled as `logo.tga`** so it loads correctly on WoW 3.3.5 (which cannot read `.png`).
 
 ---
 
@@ -12,7 +32,7 @@
 
 ### Smart Bag Scanner
 - Press **Bag Scan** to instantly scan all 5 bag slots (backpack + 4 bags).
-- Only **depositable items** are shown — soulbound gear and quest items are automatically filtered out and hidden, so you never accidentally try to deposit something the bank won't accept.
+- Only **depositable items** are shown — soulbound gear and quest items are automatically filtered out.
 - The item list is sorted alphabetically for easy browsing.
 - Hovering over any item shows its full **in-game tooltip**.
 
@@ -20,42 +40,96 @@
 - Each item row has a **checkbox** — tick the ones you want to deposit.
 - **Select All** checks every item in the list in one click.
 - **Deselect All** unchecks everything so you can start fresh.
-- Your selections are **saved between sessions** — the addon remembers which item types you had checked even after logging out.
+- Your selections are **saved between sessions**.
 
-### Guild Bank Tab Selector
-- A dropdown lets you choose **which Guild Bank tab** to deposit into.
-- Tabs you don't have deposit permission for are shown greyed out and cannot be selected.
-- The addon automatically refreshes the tab list when you open the Guild Bank.
+### Deposit Mode — Guild Bank or Personal Bank
+- A **Deposit to:** row lets you switch between **Guild Bank** and **Personal Bank** with one click.
+- In **Guild Bank** mode a tab dropdown lets you pick which bank tab receives the items.
+- In **Personal Bank** mode items go straight to your character's bank — no tab required.
+- Opening a Guild Bank or Personal Bank **automatically switches the mode** for you when auto-open is enabled.
 
 ### Queued Deposit System
-- Clicking **Deposit** sends your selected items to the chosen Guild Bank tab one at a time, with a short delay between each — exactly like a reliable in-game macro but fully automated.
-- A live progress indicator shows `Depositing X / Y...` in the status bar while the queue is running.
-- Items are verified still in their slot before each deposit — if a slot changed, that entry is safely skipped.
-- After the queue finishes, the item list automatically refreshes to reflect what is left in your bags.
-- You cannot accidentally double-click Deposit mid-run — the button is guarded until the current queue completes.
+- Items are sent one at a time with a safe 0.5 s gap — identical to a reliable macro but fully automated.
+- Live progress indicator: `Depositing X / Y...` in the status bar.
+- Slots are verified before each deposit; changed slots are safely skipped.
+- The list auto-refreshes after the queue finishes.
+- Double-click protection: the Deposit button is guarded until the current run completes.
+
+### Minimap Button *(new in v1.5.5)*
+- A circular button using the **AutoDeposit logo** sits on the edge of the minimap.
+- The logo is shown as a small circular icon framed by the standard minimap ring — correctly sized, no longer oversized.
+- **Left-click** to open or close the addon window.
+- **Drag** to reposition the button anywhere around the minimap edge; position is saved between sessions.
+- Hover shows a tooltip: *"Left-click to open / close — Drag to reposition"*.
+- Can be hidden from **Interface > AddOns > AutoDeposit**.
+
+> **Logo texture:** The logo ships as `logo.tga`, which WoW 3.3.5 loads natively (the client cannot read `.png`). No conversion needed — it just works.
+
+### Interface > AddOns Panel *(new in v1.5.5)*
+- Open via **Game Menu → Interface → AddOns → AutoDeposit**.
+- Settings available in the panel:
+  - ☑ **Auto-open at Bank / Guild Bank** — toggle the auto-open behaviour.
+  - ☑ **Show Minimap Button** — hide or show the minimap button.
+  - **Open AutoDeposit** button — launches the main window and closes the Interface panel.
+
+### Version Label *(new in v1.5.5)*
+- The current version number is shown in the **top-right corner** of the addon frame in cyan, so you always know which version is running.
+
+### Auto-Open at Bank
+- When enabled (default: on), the addon window automatically pops up whenever you open a **Guild Bank** or **Personal Bank**.
+- The mode (Guild Bank / Personal Bank) is automatically set to match the bank you just opened.
+- Toggle with the **Auto-open at Guild Bank** checkbox in the main window footer, or in the Interface panel.
+
+### Auto-Close at Bank *(new in v1.5.5)*
+- The addon window **automatically closes** when you close the Guild Bank or Personal Bank — no leftover window cluttering the screen.
+- A deposit run in progress is never interrupted; the window only closes when no deposit is active.
 
 ### Live Status Bar
-- Displays the number of depositable items found in your bags.
-- Shows how many are currently selected in green.
-- Updates in real-time as your bags change (looting, trading, etc.).
-
-### Auto Bag Refresh
-- The list silently refreshes whenever your bags change (via `BAG_UPDATE`), keeping it accurate without manual re-scanning.
-- Auto-refresh is paused during an active deposit run so it does not interfere.
+- Shows how many depositable items are in your bags and how many are selected.
+- Updates in real-time as bags change (looting, trading, etc.).
 
 ### Futuristic UI Theme
 - Deep navy/black background with an **electric cyan glowing border**.
-- Cyan-tinted header bar and accent lines.
 - Colour-coded buttons: cyan for Bag Scan, green for Deposit, amber for Deselect All.
 - Cyan hover highlight on every item row.
-- Subtle dark-blue tinted scroll area.
 - Author credit footer: **xLT69x**.
 
 ### Movable Window
-- The frame can be **dragged anywhere** on screen by clicking and holding the title bar.
-- Position resets to centre on next login (saved position coming in a future version).
+- Drag the title bar to move the window anywhere on screen.
 
-### Slash Commands
+---
+
+## Installation
+
+1. Download **AutoDeposit.zip** and extract it.
+2. Place the `AutoDeposit` folder inside:
+   ```
+   World of Warcraft\Interface\AddOns\AutoDeposit\
+   ```
+3. Launch (or `/reload`) the game and enable **AutoDeposit** on the character select AddOns screen.
+4. Type `/ad` in chat or click the **minimap button** to open the window.
+
+> The minimap logo (`logo.tga`) is already included and loads natively on WoW 3.3.5 — no conversion needed.
+
+---
+
+## How to Use
+
+### Guild Bank Deposit
+1. Open the **Guild Bank** (talk to the Guild Banker NPC) — the window opens automatically.
+2. Make sure **Guild Bank** is selected in the *Deposit to:* row.
+3. Choose a tab from the **Guild Bank Tab** dropdown.
+4. Tick items and click **Deposit**.
+
+### Personal Bank Deposit
+1. Open your **Bank** (talk to a Banker NPC) — the window opens automatically.
+2. Make sure **Personal Bank** is selected in the *Deposit to:* row.
+3. Tick items and click **Deposit**.
+
+---
+
+## Slash Commands
+
 | Command | Action |
 |---|---|
 | `/ad` | Toggle the AutoDeposit window open / closed |
@@ -66,53 +140,29 @@
 
 ---
 
-## Installation
+## Settings (Interface > AddOns)
 
-1. Download **AutoDeposit.zip**.
-2. Extract the `AutoDeposit` folder.
-3. Place the folder inside:
-   ```
-   World of Warcraft\Interface\AddOns\
-   ```
-   So the path looks like:
-   ```
-   Interface\AddOns\AutoDeposit\AutoDeposit.toc
-   Interface\AddOns\AutoDeposit\AutoDeposit.lua
-   ```
-4. Launch (or reload) the game.
-5. Enable **AutoDeposit** on the character selection AddOns screen.
-6. Log in and type `/ad` in chat to open the window.
+Open via **Game Menu → Interface → AddOns → AutoDeposit**:
 
----
-
-## How to Use
-
-1. **Open the Guild Bank** by interacting with the Guild Banker NPC.
-2. Type `/ad` (or `/autodeposit`) to open the AutoDeposit window.
-3. Click **Bag Scan** — your depositable bag items will appear in the list.
-4. **Tick the checkboxes** next to the items you want to send to the bank (or click **Select All**).
-5. Use the **Guild Bank Tab** dropdown to choose which tab receives the items.
-6. Click **Deposit** — items are sent one by one automatically.
-7. Watch the status bar for live progress. The list refreshes when done.
-
----
-
-## Notes
-
-- You **must have the Guild Bank window open** before clicking Deposit. The addon will remind you if it is not open.
-- Items you do not have deposit permission for on the selected tab will be rejected by the server — pick a tab you have access to.
-- The 0.5-second delay between deposits is intentional and matches what the server allows for guild bank interactions.
+| Setting | Default | Description |
+|---|---|---|
+| Auto-open at Bank / Guild Bank | ✅ On | Auto-shows the window when you visit a bank |
+| Show Minimap Button | ✅ On | Toggles the minimap logo button |
 
 ---
 
 ## Saved Variables
 
-The addon saves the following between sessions (stored in `WTF\Account\<name>\SavedVariables\AutoDepositDB.lua`):
+Stored in `WTF\Account\<name>\SavedVariables\AutoDepositDB.lua`:
 
 | Variable | Description |
 |---|---|
-| `selectedItems` | The set of item IDs you last had checked |
-| `guildTab` | The last Guild Bank tab you selected |
+| `selectedItems` | Item IDs last checked in the list |
+| `guildTab` | Last selected Guild Bank tab |
+| `depositMode` | Last deposit mode (`"guild"` or `"bank"`) |
+| `autoOpen` | Whether auto-open is enabled |
+| `showMinimapBtn` | Whether the minimap button is visible |
+| `minimapAngle` | Saved position of the minimap button (radians) |
 
 ---
 
@@ -120,7 +170,8 @@ The addon saves the following between sessions (stored in `WTF\Account\<name>\Sa
 
 | Version | Changes |
 |---|---|
-| 1.5.0 | Futuristic UI theme, cyan border, coloured buttons, author branding |
+| **1.5.5** | Version label in frame top-right; minimap button with bundled TGA logo (circular, correctly sized); Interface > AddOns panel; auto-close window when bank/guild bank closes; fixed checkbox `.Text` crash that blocked the panel & minimap button; both now created on `PLAYER_LOGIN`; version sync across .lua and .toc |
+| 1.5.0 | Personal Bank deposit mode; auto-open at bank; futuristic UI theme; author branding |
 | 1.4.0 | Queued deposit system — all selected items now deposit reliably |
 | 1.3.0 | Fixed deposit API: switched to `UseContainerItem` (correct WotLK method) |
 | 1.2.0 | Depositable-only filter via tooltip scanner, layout overhaul |
@@ -132,4 +183,5 @@ The addon saves the following between sessions (stored in `WTF\Account\<name>\Sa
 
 ## Author
 
-**xLT69x**
+**xLT69x** — WoW 3.3.5 private server enthusiast.
+
