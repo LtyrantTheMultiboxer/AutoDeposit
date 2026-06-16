@@ -1,8 +1,8 @@
 --[[
-    AutoDeposit v1.3.0
+    AutoDeposit v1.5.5
     WoW 3.3.5 (WotLK) Addon
     Scans bags, filters to depositable items only, and deposits
-    selected items into a chosen Guild Bank tab.
+    selected items into a chosen Guild Bank tab or Personal Bank.
     Usage: /ad  or  /autodeposit
 --]]
 
@@ -12,7 +12,7 @@
 AutoDepositDB = AutoDepositDB or {}
 
 local AD = {}
-AD.version       = "1.5.0"
+AD.version       = "1.5.5"
 AD.selectedItems = {}    -- [selKey] = true
 AD.bagItems      = {}    -- filtered, depositable items only
 AD.guildTab      = 1     -- selected guild bank tab (1-based)
@@ -21,6 +21,8 @@ AD.rows          = {}    -- reusable row frames
 AD.autoOpen      = true     -- auto-open window when any bank is opened
 AD.depositMode   = "guild"  -- "guild" or "bank"
 AD.bankOpen      = false    -- set by BANKFRAME_OPENED / CLOSED
+AD.minimapAngle  = math.pi * 0.75  -- radian angle around minimap
+AD.showMinimapBtn = true    -- show/hide minimap button
 
 local FRAME_W  = 440
 local FRAME_H  = 622
@@ -36,10 +38,12 @@ local function Print(msg)
 end
 
 local function SaveState()
-    AutoDepositDB.selectedItems = AD.selectedItems
-    AutoDepositDB.guildTab      = AD.guildTab
-    AutoDepositDB.autoOpen      = AD.autoOpen
-    AutoDepositDB.depositMode   = AD.depositMode
+    AutoDepositDB.selectedItems  = AD.selectedItems
+    AutoDepositDB.guildTab       = AD.guildTab
+    AutoDepositDB.autoOpen       = AD.autoOpen
+    AutoDepositDB.depositMode    = AD.depositMode
+    AutoDepositDB.minimapAngle   = AD.minimapAngle
+    AutoDepositDB.showMinimapBtn = AD.showMinimapBtn
 end
 
 local function LoadState()
@@ -54,6 +58,12 @@ local function LoadState()
     end
     if type(AutoDepositDB.depositMode) == "string" then
         AD.depositMode = AutoDepositDB.depositMode
+    end
+    if type(AutoDepositDB.minimapAngle) == "number" then
+        AD.minimapAngle = AutoDepositDB.minimapAngle
+    end
+    if type(AutoDepositDB.showMinimapBtn) == "boolean" then
+        AD.showMinimapBtn = AutoDepositDB.showMinimapBtn
     end
 end
 
@@ -519,6 +529,11 @@ local function CreateMainFrame()
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
     closeBtn:SetScript("OnClick", function() f:Hide() end)
 
+    -- Version label — top-right, just inside the close button
+    local verLbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    verLbl:SetPoint("TOPRIGHT", f, "TOPRIGHT", -32, -10)
+    verLbl:SetText("|cff336677v|r|cff00AAFF" .. AD.version .. "|r")
+
     -- ── Scroll area ───────────────────────────────────────────────────
     local scrollFrame = CreateFrame("ScrollFrame", "AutoDepositScrollFrame", f, "UIPanelScrollFrameTemplate")
     scrollFrame:SetSize(FRAME_W - 44, SCROLL_H)
@@ -684,9 +699,165 @@ local function CreateMainFrame()
 end
 
 ------------------------------------------------------------------------
--- Toggle
+-- Forward declaration so minimap / options closures can reference it
+-- before the full definition below.
 ------------------------------------------------------------------------
-local function ToggleFrame()
+local ToggleFrame
+
+------------------------------------------------------------------------
+-- Minimap button
+------------------------------------------------------------------------
+local function CreateMinimapButton()
+    local btn = CreateFrame("Button", "AutoDepositMinimapBtn", Minimap)
+    btn:SetSize(31, 31)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameLevel(8)
+
+    -- Logo icon — small, cropped to a circle, sitting in the center of the ring.
+    -- TexCoord trims the square corners off the 1024x1024 logo so only the
+    -- circular center shows through the minimap border's round hole.
+    local icon = btn:CreateTexture(nil, "BACKGROUND")
+    icon:SetSize(20, 20)
+    icon:SetPoint("TOPLEFT", btn, "TOPLEFT", 6, -6)
+    icon:SetTexture("Interface\\AddOns\\AutoDeposit\\logo")
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    AD.minimapIcon = icon
+
+    -- Circular minimap tracking-border ring framing the logo
+    local border = btn:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+    -- Glow on hover
+    btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    -- Position on the minimap edge
+    local RADIUS = 80
+    local function UpdatePos()
+        local a = AD.minimapAngle
+        btn:SetPoint("CENTER", Minimap, "CENTER",
+            RADIUS * math.cos(a), RADIUS * math.sin(a))
+    end
+    UpdatePos()
+
+    -- Drag around the minimap
+    btn:RegisterForDrag("LeftButton")
+    btn:SetScript("OnDragStart", function(self)
+        self:LockHighlight()
+        self:SetScript("OnUpdate", function()
+            local mx, my = Minimap:GetCenter()
+            local cx, cy = GetCursorPosition()
+            local s      = UIParent:GetEffectiveScale()
+            AD.minimapAngle = math.atan2((cy / s) - my, (cx / s) - mx)
+            UpdatePos()
+        end)
+    end)
+    btn:SetScript("OnDragStop", function(self)
+        self:UnlockHighlight()
+        self:SetScript("OnUpdate", nil)
+        SaveState()
+    end)
+
+    -- Left-click: toggle main window
+    btn:SetScript("OnClick", function(self, button)
+        if button == "LeftButton" then ToggleFrame() end
+    end)
+
+    -- Tooltip
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("|cff00EEFFAutoDeposit|r", 1, 1, 1)
+        GameTooltip:AddLine("Left-click to open / close", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Drag to reposition", 0.6, 0.6, 0.6)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    if AD.showMinimapBtn == false then btn:Hide() end
+
+    AD.minimapBtn = btn
+end
+
+------------------------------------------------------------------------
+-- Interface > AddOns options panel
+------------------------------------------------------------------------
+local function CreateOptionsPanel()
+    local panel = CreateFrame("Frame", "AutoDepositOptionsPanel", UIParent)
+    panel.name = "AutoDeposit"
+
+    -- Title
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("|cff00EEFFAutoDeposit|r")
+
+    local sub = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+    sub:SetText("|cff556677v" .. AD.version .. "  by xLT69x|r")
+
+    -- Divider
+    local div = panel:CreateTexture(nil, "ARTWORK")
+    div:SetHeight(1)
+    div:SetPoint("TOPLEFT",  sub, "BOTTOMLEFT",  0, -8)
+    div:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -16, 0)
+    div:SetTexture(0.00, 0.55, 0.80, 0.6)
+
+    -- Auto-open checkbox
+    local autoOpenCB = CreateFrame("CheckButton", "AutoDepositOpts_AutoOpen",
+        panel, "InterfaceOptionsCheckButtonTemplate")
+    autoOpenCB:SetPoint("TOPLEFT", div, "BOTTOMLEFT", 0, -12)
+    -- WoW 3.3.5 has no checkbox.Text; the label is the global "<name>Text"
+    local autoOpenLbl = _G["AutoDepositOpts_AutoOpenText"]
+    if autoOpenLbl then autoOpenLbl:SetText("Auto-open when visiting a bank or guild bank") end
+    autoOpenCB:SetChecked(AD.autoOpen)
+    autoOpenCB:SetScript("OnClick", function(self)
+        AD.autoOpen = self:GetChecked() and true or false
+        if AD.autoOpenCB then AD.autoOpenCB:SetChecked(AD.autoOpen) end
+        SaveState()
+    end)
+
+    -- Minimap button checkbox
+    local minimapCB = CreateFrame("CheckButton", "AutoDepositOpts_Minimap",
+        panel, "InterfaceOptionsCheckButtonTemplate")
+    minimapCB:SetPoint("TOPLEFT", autoOpenCB, "BOTTOMLEFT", 0, -4)
+    local minimapLbl = _G["AutoDepositOpts_MinimapText"]
+    if minimapLbl then minimapLbl:SetText("Show minimap button") end
+    minimapCB:SetChecked(AD.showMinimapBtn ~= false)
+    minimapCB:SetScript("OnClick", function(self)
+        AD.showMinimapBtn = self:GetChecked() and true or false
+        if AD.minimapBtn then
+            if AD.showMinimapBtn then AD.minimapBtn:Show()
+            else AD.minimapBtn:Hide() end
+        end
+        SaveState()
+    end)
+
+    -- Sync values when the panel is shown
+    panel:SetScript("OnShow", function()
+        autoOpenCB:SetChecked(AD.autoOpen)
+        minimapCB:SetChecked(AD.showMinimapBtn ~= false)
+    end)
+
+    -- Open-button shortcut at the bottom of the panel
+    local openBtn = CreateFrame("Button", "AutoDepositOpts_Open",
+        panel, "UIPanelButtonTemplate")
+    openBtn:SetSize(160, 24)
+    openBtn:SetPoint("TOPLEFT", minimapCB, "BOTTOMLEFT", 0, -16)
+    openBtn:SetText("|cff00EEFF Open AutoDeposit|r")
+    openBtn:SetScript("OnClick", function()
+        ToggleFrame()
+        -- Also close the Interface panel so the addon window isn't buried
+        HideUIPanel(InterfaceOptionsFrame)
+    end)
+
+    InterfaceOptions_AddCategory(panel)
+    AD.optionsPanel = panel
+end
+
+------------------------------------------------------------------------
+-- Toggle  (fills in the forward declaration above)
+------------------------------------------------------------------------
+ToggleFrame = function()
     if not AD.frame then
         CreateMainFrame()
     end
@@ -709,6 +880,7 @@ end
 ------------------------------------------------------------------------
 local ev = CreateFrame("Frame", "AutoDepositEventFrame")
 ev:RegisterEvent("ADDON_LOADED")
+ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("GUILDBANKFRAME_OPENED")
 ev:RegisterEvent("GUILDBANKFRAME_CLOSED")
 ev:RegisterEvent("BANKFRAME_OPENED")
@@ -731,6 +903,11 @@ ev:SetScript("OnEvent", function(self, event, arg1)
         LoadState()
         Print("v" .. AD.version .. " loaded — type |cff00ccff/ad|r to open.")
 
+    elseif event == "PLAYER_LOGIN" then
+        -- Interface options system and minimap are fully ready at login
+        CreateOptionsPanel()
+        CreateMinimapButton()
+
     elseif event == "GUILDBANKFRAME_OPENED" then
         AD.guildBankOpen = true
         if AD.autoOpen then
@@ -744,6 +921,10 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "GUILDBANKFRAME_CLOSED" then
         AD.guildBankOpen = false
+        -- Auto-close the window when the guild bank closes (unless mid-deposit)
+        if AD.frame and AD.frame:IsShown() and not AD.isDepositing then
+            AD.frame:Hide()
+        end
 
     elseif event == "BANKFRAME_OPENED" then
         AD.bankOpen = true
@@ -755,6 +936,10 @@ ev:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "BANKFRAME_CLOSED" then
         AD.bankOpen = false
+        -- Auto-close the window when the personal bank closes (unless mid-deposit)
+        if AD.frame and AD.frame:IsShown() and not AD.isDepositing then
+            AD.frame:Hide()
+        end
 
     elseif event == "BAG_UPDATE" then
         -- Don't auto-refresh while a deposit run is in progress;
@@ -776,9 +961,13 @@ SlashCmdList["AUTODEPOSIT"] = function(msg)
     local cmd = strtrim(msg):lower()
     if cmd == "help" or cmd == "?" then
         Print("/ad             — toggle window")
+        Print("/ad options     — open Interface > AddOns settings panel")
         Print("/ad scan        — scan bags, print depositable item count")
         Print("/ad version     — show version")
         Print("/ad help        — this help")
+    elseif cmd == "options" or cmd == "config" or cmd == "settings" then
+        InterfaceOptionsFrame_OpenToCategory(AD.optionsPanel)
+        InterfaceOptionsFrame_OpenToCategory(AD.optionsPanel)  -- called twice; WoW needs this to reliably scroll to the entry
     elseif cmd == "scan" then
         ScanBags()
         Print("Found " .. #AD.bagItems .. " depositable item(s) in bags.")
